@@ -30,7 +30,7 @@ import org.springframework.http.HttpStatus;
 @EnableWebSecurity
 public class SecurityConfig {
 
-    @org.springframework.beans.factory.annotation.Value("${app.cors.allowed-origin:http://localhost:5173}")
+    @org.springframework.beans.factory.annotation.Value("${app.cors.allowed-origin:http://localhost:5175}")
     private String allowedOrigin;
 
     @Bean
