@@ -28,6 +28,8 @@ public class Invoice {
     private String taxMode = "IGST";
     @Column(nullable = false)
     private String status = "Pending";
+    @Column(nullable = false)
+    private boolean inventoryAdjusted = false;
     @Column(name = "owner_username")
     private String ownerUsername;
     @ElementCollection
@@ -56,6 +58,8 @@ public class Invoice {
     public void setTaxMode(String taxMode) { this.taxMode = taxMode; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public boolean isInventoryAdjusted() { return inventoryAdjusted; }
+    public void setInventoryAdjusted(boolean inventoryAdjusted) { this.inventoryAdjusted = inventoryAdjusted; }
     public String getOwnerUsername() { return ownerUsername; }
     public void setOwnerUsername(String ownerUsername) { this.ownerUsername = ownerUsername; }
     public List<InvoiceLineItem> getLineItems() { return lineItems; }

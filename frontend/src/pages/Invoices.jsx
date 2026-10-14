@@ -28,7 +28,9 @@ function printInvoice(invoice, customer, settings) {
 function Invoices() {
   const [invoices, setInvoices, mode, error, replaceInvoices, loading] = useLocalCollection("invoices");
   const [customers] = useLocalCollection("customers");
+  const [products, setProducts] = useLocalCollection("products");
   const [payments] = useLocalCollection("payments");
+  const [stockMovements, setStockMovements] = useLocalCollection("stockMovements");
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get("search") || "");
   const [status, setStatus] = useState("All status");
   const [editing, setEditing] = useState(null);
@@ -44,6 +46,15 @@ function Invoices() {
   };
   const openEdit = (invoice) => setEditing({ ...invoice, dueDate: invoice.dueDate || asDate(14), taxMode: invoice.taxMode || "IGST", lineItems: invoice.lineItems?.length ? invoice.lineItems.map((line) => ({ ...line })) : [{ description: "Invoice total", quantity: 1, unitPrice: invoice.total || 0, gstRate: 0 }] });
   const updateLine = (index, key, value) => setEditing((current) => ({ ...current, lineItems: current.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: key === "description" ? value : Number(value) } : line) }));
+  const selectProduct = (index, productId) => {
+    const product = products.find((item) => String(item.id) === productId);
+    setEditing((current) => ({ ...current, lineItems: current.lineItems.map((line, lineIndex) => lineIndex === index ? {
+      ...line,
+      productId: product ? product.id : null,
+      description: product ? `${product.name}${product.variant ? ` (${product.variant})` : ""}` : "",
+      unitPrice: product ? Number(product.price || 0) : 0,
+    } : line) }));
+  };
   const save = async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -53,12 +64,29 @@ function Invoices() {
     if (!customer) { setNotice("Choose a customer from your customer list."); return; }
     if (!lines.length || lines.some((line) => !line.description.trim() || line.quantity <= 0 || line.unitPrice < 0)) { setNotice("Add a description, positive quantity and non-negative unit price for every item."); return; }
     const totals = invoiceTotals(lines);
-    const draft = { invoiceNumber: fields.invoiceNumber.trim(), customerName: fields.customerName, date: fields.date, dueDate: fields.dueDate, taxMode: fields.taxMode, lineItems: lines, subtotal: totals.subtotal, taxAmount: totals.tax, total: totals.subtotal + totals.tax, status: "Pending" };
+    const previousInvoice = editing.id ? invoices.find((item) => String(item.id) === String(editing.id)) : null;
+    const stockDeltas = new Map();
+    const collectStock = (items, multiplier) => items.forEach((line) => {
+      const product = products.find((item) => (line.productId != null && String(item.id) === String(line.productId)) || `${String(item.name).trim()}${item.variant ? ` (${item.variant})` : ""}`.toLowerCase() === String(line.description).trim().toLowerCase());
+      if (product) stockDeltas.set(String(product.id), (stockDeltas.get(String(product.id)) || 0) + Number(line.quantity || 0) * multiplier);
+    });
+    if (mode === "demo") {
+      if (previousInvoice?.inventoryAdjusted) collectStock(previousInvoice.lineItems || [], 1);
+      collectStock(lines, -1);
+      const insufficient = products.find((product) => Number(product.stock) + (stockDeltas.get(String(product.id)) || 0) < 0);
+      if (insufficient) { setNotice(`Not enough ${insufficient.name} in stock. Available: ${insufficient.stock}.`); return; }
+    }
+    const draft = { invoiceNumber: fields.invoiceNumber.trim(), customerName: fields.customerName, date: fields.date, dueDate: fields.dueDate, taxMode: fields.taxMode, lineItems: lines, subtotal: totals.subtotal, taxAmount: totals.tax, total: totals.subtotal + totals.tax, status: "Pending", ...(mode === "demo" ? { inventoryAdjusted: true } : {}) };
     setSaving(true);
     try {
       const saved = mode === "server" ? await saveServerRecord("invoices", editing.id, draft) : { ...draft, id: editing.id ?? globalThis.crypto?.randomUUID?.() ?? `${Date.now()}` };
       const next = editing.id ? invoices.map((item) => String(item.id) === String(editing.id) ? saved : item) : [saved, ...invoices];
       if (mode === "server") replaceInvoices(next); else setInvoices(next);
+      if (mode === "demo" && stockDeltas.size) setProducts(products.map((product) => ({ ...product, stock: Number(product.stock) + (stockDeltas.get(String(product.id)) || 0) })));
+      if (mode === "demo" && stockDeltas.size) setStockMovements([...Array.from(stockDeltas.entries()).filter(([, change]) => change).map(([productId, quantityChange]) => {
+        const product = products.find((item) => String(item.id) === productId);
+        return { id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${productId}`, productId: product?.id, productName: product?.name || "Product", variant: product?.variant || "", quantityChange, reason: `Invoice ${draft.invoiceNumber}${editing.id ? " updated" : ""}`, createdAt: new Date().toISOString() };
+      }), ...stockMovements]);
       setEditing(null); setNotice(`Invoice ${editing.id ? "updated" : "created"}.`); window.setTimeout(() => setNotice(""), 2800);
     } catch (requestError) { setNotice(requestError.response?.data?.message || "Could not save this invoice. Check the API connection."); }
     finally { setSaving(false); }
@@ -68,6 +96,18 @@ function Invoices() {
     if (!window.confirm(`Delete invoice ${invoice.invoiceNumber}? This cannot be undone.`)) return;
     try {
       if (mode === "server") await deleteServerRecord("invoices", invoice.id);
+      if (mode === "demo" && invoice.inventoryAdjusted) {
+        const stockDeltas = new Map();
+        (invoice.lineItems || []).forEach((line) => {
+          const product = products.find((item) => (line.productId != null && String(item.id) === String(line.productId)) || `${String(item.name).trim()}${item.variant ? ` (${item.variant})` : ""}`.toLowerCase() === String(line.description).trim().toLowerCase());
+          if (product) stockDeltas.set(String(product.id), (stockDeltas.get(String(product.id)) || 0) + Number(line.quantity || 0));
+        });
+        setProducts(products.map((product) => ({ ...product, stock: Number(product.stock) + (stockDeltas.get(String(product.id)) || 0) })));
+        setStockMovements([...Array.from(stockDeltas.entries()).map(([productId, quantityChange]) => {
+          const product = products.find((item) => String(item.id) === productId);
+          return { id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${productId}`, productId: product?.id, productName: product?.name || "Product", variant: product?.variant || "", quantityChange, reason: `Invoice ${invoice.invoiceNumber} deleted`, createdAt: new Date().toISOString() };
+        }), ...stockMovements]);
+      }
       const next = invoices.filter((item) => String(item.id) !== String(invoice.id));
       if (mode === "server") replaceInvoices(next); else setInvoices(next);
       setNotice("Invoice deleted.");
@@ -78,6 +118,21 @@ function Invoices() {
     try { settings = JSON.parse(localStorage.getItem("mybillbuddy:settings") || "{}"); } catch { /* Use default invoice branding when browser storage is unavailable. */ }
     printInvoice(invoice, customers.find((item) => item.name === invoice.customerName), { ...settings, payments });
   };
+  const shareInvoice = (invoice) => {
+    const customer = customers.find((item) => item.name === invoice.customerName);
+    const balance = invoiceBalance(invoice, payments);
+    const subject = `Invoice ${invoice.invoiceNumber} from ${customer?.name || "our business"}`;
+    const body = `Hello ${customer?.name || ""},\n\nPlease find the details for invoice ${invoice.invoiceNumber}.\nInvoice total: ${money(invoice.total)}\nBalance due: ${money(balance)}\nDue date: ${invoice.dueDate || "—"}\n\nRegards`;
+    const mailto = `mailto:${encodeURIComponent(customer?.email || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    if (navigator.share) navigator.share({ title: subject, text: body }).catch(() => { window.location.href = mailto; });
+    else window.location.href = mailto;
+  };
+  const remindCustomer = (invoice) => {
+    const customer = customers.find((item) => item.name === invoice.customerName);
+    const subject = `Payment reminder: invoice ${invoice.invoiceNumber}`;
+    const body = `Hello ${customer?.name || ""},\n\nA friendly reminder that invoice ${invoice.invoiceNumber} is overdue. The remaining balance is ${money(invoiceBalance(invoice, payments))}. The due date was ${invoice.dueDate || ""}.\n\nPlease let us know if you have already made this payment.\n\nRegards`;
+    window.location.href = `mailto:${encodeURIComponent(customer?.email || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  };
   const totals = editing ? invoiceTotals(editing.lineItems || []) : { subtotal: 0, tax: 0 };
 
   return <div className="app-layout"><Sidebar /><main className="app-main">
@@ -86,14 +141,14 @@ function Invoices() {
       <div className="page-heading"><div><h1>Invoices</h1><p>Create, track and collect itemized invoices. <span className="record-count">{filtered.length} total</span></p></div><div className="page-actions"><button className="secondary-action" onClick={() => exportCsv("invoices.csv", filtered.map((invoice) => ({ ...invoice, balance: invoiceBalance(invoice, payments), status: invoiceStatus(invoice, payments) })), [{ key: "invoiceNumber", label: "Invoice" }, { key: "customerName", label: "Customer" }, { key: "date", label: "Issue date" }, { key: "dueDate", label: "Due date" }, { key: "subtotal", label: "Subtotal" }, { key: "taxAmount", label: "GST" }, { key: "total", label: "Total" }, { key: "balance", label: "Balance due" }, { key: "status", label: "Status" }])} disabled={!filtered.length}>Export CSV</button><button className="real-primary-button" onClick={openNew} disabled={loading || !customers.length}>＋ Create invoice</button></div></div>
       {!customers.length && <div className="api-error">Add a customer before creating an invoice. <a href="/customers">Open customers →</a></div>}
       <label className="filter-label">Status <select value={status} onChange={(event) => setStatus(event.target.value)}><option>All status</option><option>Paid</option><option>Pending</option><option>Overdue</option></select></label>
-      <div className="table-card responsive-table">{loading ? <div className="empty-state"><h2>Loading invoices…</h2></div> : filtered.length ? <table><thead><tr>{["Invoice", "Customer", "Issue date", "Due date", "Total", "Balance due", "Status", "Actions"].map((label) => <th key={label}>{label}</th>)}</tr></thead><tbody>{filtered.map((invoice) => <tr key={invoice.id}><td data-label="Invoice"><strong>{invoice.invoiceNumber}</strong></td><td data-label="Customer">{invoice.customerName}</td><td data-label="Issue date">{invoice.date}</td><td data-label="Due date">{invoice.dueDate || "—"}</td><td data-label="Total">{money(invoice.total)}</td><td data-label="Balance due">{money(invoiceBalance(invoice, payments))}</td><td data-label="Status"><span className={`status ${invoiceStatus(invoice, payments).toLowerCase()}`}>{invoiceStatus(invoice, payments)}</span></td><td className="record-actions" data-label="Actions"><button className="row-action" aria-label={`Edit ${invoice.invoiceNumber}`} onClick={() => openEdit(invoice)}>Edit</button><button className="row-action" aria-label={`Print ${invoice.invoiceNumber}`} onClick={() => print(invoice)}>PDF</button><button className="delete-button" aria-label={`Delete ${invoice.invoiceNumber}`} onClick={() => remove(invoice)}>Delete</button></td></tr>)}</tbody></table> : <div className="empty-state"><span>▤</span><h2>{invoices.length ? "No matching invoices" : "No invoices yet"}</h2><p>{invoices.length ? "Try another search or status filter." : "Create your first itemized invoice to get started."}</p>{!invoices.length && customers.length > 0 && <button className="real-primary-button" onClick={openNew}>＋ Create invoice</button>}</div>}</div>
+      <div className="table-card responsive-table">{loading ? <div className="empty-state"><h2>Loading invoices…</h2></div> : filtered.length ? <table><thead><tr>{["Invoice", "Customer", "Issue date", "Due date", "Total", "Balance due", "Status", "Actions"].map((label) => <th key={label}>{label}</th>)}</tr></thead><tbody>{filtered.map((invoice) => <tr key={invoice.id}><td data-label="Invoice"><strong>{invoice.invoiceNumber}</strong></td><td data-label="Customer">{invoice.customerName}</td><td data-label="Issue date">{invoice.date}</td><td data-label="Due date">{invoice.dueDate || "—"}</td><td data-label="Total">{money(invoice.total)}</td><td data-label="Balance due">{money(invoiceBalance(invoice, payments))}</td><td data-label="Status"><span className={`status ${invoiceStatus(invoice, payments).toLowerCase()}`}>{invoiceStatus(invoice, payments)}</span></td><td className="record-actions" data-label="Actions"><button className="row-action" aria-label={`Edit ${invoice.invoiceNumber}`} onClick={() => openEdit(invoice)}>Edit</button><button className="row-action" aria-label={`Print ${invoice.invoiceNumber}`} onClick={() => print(invoice)}>PDF</button><button className="row-action" aria-label={`Share ${invoice.invoiceNumber}`} onClick={() => shareInvoice(invoice)}>Share</button>{invoiceStatus(invoice, payments) === "Overdue" && invoiceBalance(invoice, payments) > 0 && <button className="row-action" onClick={() => remindCustomer(invoice)}>Remind</button>}<button className="delete-button" aria-label={`Delete ${invoice.invoiceNumber}`} onClick={() => remove(invoice)}>Delete</button></td></tr>)}</tbody></table> : <div className="empty-state"><span>▤</span><h2>{invoices.length ? "No matching invoices" : "No invoices yet"}</h2><p>{invoices.length ? "Try another search or status filter." : "Create your first itemized invoice to get started."}</p>{!invoices.length && customers.length > 0 && <button className="real-primary-button" onClick={openNew}>＋ Create invoice</button>}</div>}</div>
       {notice && <div className="toast" role="status">{notice}</div>}
     </section>
   </main>
   {editing && <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEditing(null); }}><section className="record-dialog invoice-dialog" role="dialog" aria-modal="true" aria-labelledby="invoice-dialog-title"><button className="dialog-close" aria-label="Close" onClick={() => !saving && setEditing(null)}>×</button><span className="dialog-eyebrow">ITEMIZED BILLING</span><h2 id="invoice-dialog-title">{editing.id ? "Edit invoice" : "New invoice"}</h2><p>Choose a customer, add items and set tax per item.</p>
-    <form className="record-form" onSubmit={save}><label><span>Invoice number *</span><input name="invoiceNumber" defaultValue={editing.invoiceNumber} required /></label><label><span>Customer *</span><select name="customerName" defaultValue={editing.customerName} required><option value="" disabled>Choose a customer</option>{customers.map((customer) => <option key={customer.id} value={customer.name}>{customer.name}</option>)}</select></label><div className="invoice-date-grid"><label><span>Issue date *</span><input name="date" type="date" defaultValue={editing.date} required /></label><label><span>Due date *</span><input name="dueDate" type="date" min={editing.date} defaultValue={editing.dueDate} required /></label></div>
+    <form className="record-form invoice-form" onSubmit={save}><div className="invoice-meta-grid"><label><span>Invoice number *</span><input name="invoiceNumber" defaultValue={editing.invoiceNumber} required /></label><label><span>Customer *</span><select name="customerName" defaultValue={editing.customerName} required><option value="" disabled>Choose a customer</option>{customers.map((customer) => <option key={customer.id} value={customer.name}>{customer.name}</option>)}</select></label><div className="invoice-date-grid"><label><span>Issue date *</span><input name="date" type="date" defaultValue={editing.date} required /></label><label><span>Due date *</span><input name="dueDate" type="date" min={editing.date} defaultValue={editing.dueDate} required /></label></div></div>
       <div className="invoice-lines-heading"><strong>Items</strong><button className="row-action" type="button" onClick={() => setEditing((current) => ({ ...current, lineItems: [...current.lineItems, newLine()] }))}>＋ Add item</button></div>
-      {editing.lineItems.map((line, index) => <div className="invoice-line-editor" key={index}><label><span>Description *</span><input value={line.description} onChange={(event) => updateLine(index, "description", event.target.value)} required /></label><div className="invoice-line-grid"><label><span>Qty *</span><input type="number" min="0.01" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} required /></label><label><span>Unit price *</span><input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} required /></label><label><span>GST rate</span><select value={line.gstRate} onChange={(event) => updateLine(index, "gstRate", event.target.value)}>{[0, 5, 12, 18, 28].map((rate) => <option key={rate} value={rate}>{rate}%</option>)}</select></label>{editing.lineItems.length > 1 && <button className="delete-button" type="button" aria-label={`Remove item ${index + 1}`} onClick={() => setEditing((current) => ({ ...current, lineItems: current.lineItems.filter((_, lineIndex) => lineIndex !== index) }))}>Remove</button>}</div></div>)}
+      {editing.lineItems.map((line, index) => <div className="invoice-line-editor" key={index}>{products.length > 0 && <label><span>Choose a product</span><select value={line.productId || ""} onChange={(event) => selectProduct(index, event.target.value)}><option value="">Select from inventory or enter manually</option>{products.map((product) => <option key={product.id} value={product.id}>{product.name}{product.variant ? ` · ${product.variant}` : ""} · {money(product.price)} · {product.stock} in stock</option>)}</select></label>}<label><span>Description *</span><input value={line.description} onChange={(event) => updateLine(index, "description", event.target.value)} required /></label><div className="invoice-line-grid"><label><span>Qty *</span><input type="number" min="0.01" step="0.01" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} required /></label><label><span>Unit price *</span><input type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, "unitPrice", event.target.value)} required /></label><label><span>GST rate</span><select value={line.gstRate} onChange={(event) => updateLine(index, "gstRate", event.target.value)}>{[0, 5, 12, 18, 28].map((rate) => <option key={rate} value={rate}>{rate}%</option>)}</select></label>{editing.lineItems.length > 1 && <button className="delete-button" type="button" aria-label={`Remove item ${index + 1}`} onClick={() => setEditing((current) => ({ ...current, lineItems: current.lineItems.filter((_, lineIndex) => lineIndex !== index) }))}>Remove</button>}</div></div>)}
       <label><span>GST calculation</span><select name="taxMode" defaultValue={editing.taxMode}><option value="IGST">IGST (inter-state)</option><option value="CGST_SGST">CGST + SGST (within state)</option></select></label><p className="invoice-tax-note">Tax is calculated from each item’s GST rate. Confirm the right tax treatment and GSTINs before issuing an invoice.</p><div className="invoice-total-preview"><span>Subtotal</span><strong>{money(totals.subtotal)}</strong><span>GST</span><strong>{money(totals.tax)}</strong><span>Total</span><strong>{money(totals.subtotal + totals.tax)}</strong></div><div className="dialog-actions"><button type="button" className="secondary-action" onClick={() => setEditing(null)} disabled={saving}>Cancel</button><button className="real-primary-button" type="submit" disabled={saving}>{saving ? "Saving…" : editing.id ? "Save invoice" : "Create invoice"}</button></div>
     </form></section></div>}
   </div>;

@@ -6,6 +6,7 @@ function RecordPage({ config }) {
   const [records, setRecords, mode, dataError, replaceRecords, loading] = useLocalCollection(config.collection);
   const [invoices, setInvoices, invoiceMode, invoiceError, replaceInvoices] = useLocalCollection("invoices");
   const [payments] = useLocalCollection("payments");
+  const [stockMovements, setStockMovements, , movementError, replaceStockMovements] = useLocalCollection("stockMovements");
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get("search") || "");
   const [status, setStatus] = useState("All status");
   const [editing, setEditing] = useState(null);
@@ -18,6 +19,24 @@ function RecordPage({ config }) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [editing]);
+
+  useEffect(() => {
+    if (config.collection !== "products" || mode !== "demo" || !invoices.some((invoice) => !invoice.inventoryAdjusted)) return;
+    const stockDeltas = new Map();
+    invoices.filter((invoice) => !invoice.inventoryAdjusted).forEach((invoice) => {
+      (invoice.lineItems || []).forEach((line) => {
+        const product = records.find((item) => (line.productId != null && String(item.id) === String(line.productId)) || String(item.name).trim().toLowerCase() === String(line.description).trim().toLowerCase());
+        if (product) stockDeltas.set(String(product.id), (stockDeltas.get(String(product.id)) || 0) - Number(line.quantity || 0));
+      });
+    });
+    if (stockDeltas.size) setRecords(records.map((product) => ({ ...product, stock: Math.max(0, Number(product.stock) + (stockDeltas.get(String(product.id)) || 0)) })));
+    const reconciledMovements = invoices.filter((invoice) => !invoice.inventoryAdjusted).flatMap((invoice) => (invoice.lineItems || []).flatMap((line) => {
+      const product = records.find((item) => (line.productId != null && String(item.id) === String(line.productId)) || String(item.name).trim().toLowerCase() === String(line.description).trim().toLowerCase());
+      return product ? [{ id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`, productId: product.id, productName: product.name, variant: product.variant || "", quantityChange: -Number(line.quantity || 0), reason: `Invoice ${invoice.invoiceNumber}`, createdAt: new Date().toISOString() }] : [];
+    }));
+    if (reconciledMovements.length) setStockMovements([...reconciledMovements, ...stockMovements]);
+    setInvoices(invoices.map((invoice) => invoice.inventoryAdjusted ? invoice : { ...invoice, inventoryAdjusted: true }));
+  }, [config.collection, invoices, mode, records, setInvoices, setRecords, setStockMovements, stockMovements]);
 
   const filtered = useMemo(() => records.filter((record) => {
     const matchesQuery = config.columns.some(({ key }) =>
@@ -62,11 +81,17 @@ function RecordPage({ config }) {
           : [saved, ...records];
         replaceRecords(nextRecords);
         if (config.collection === "payments") replaceInvoices(await loadServerCollection("invoices"));
+        if (config.collection === "products") replaceStockMovements(await loadServerCollection("stockMovements"));
       } else {
         nextRecords = editing.id
           ? records.map((item) => item.id === editing.id ? { ...item, ...draft } : item)
           : [{ ...draft, id: globalThis.crypto?.randomUUID?.() || `${Date.now()}` }, ...records];
         setRecords(nextRecords);
+        if (config.collection === "products") {
+          const oldStock = editing.id ? Number(records.find((item) => String(item.id) === String(editing.id))?.stock || 0) : 0;
+          const delta = Number(draft.stock || 0) - oldStock;
+          if (delta) setStockMovements([{ id: globalThis.crypto?.randomUUID?.() || `${Date.now()}`, productId: editing.id, productName: draft.name, variant: draft.variant || "", quantityChange: delta, reason: editing.id ? "Stock adjustment" : "Opening stock", createdAt: new Date().toISOString() }, ...stockMovements]);
+        }
         if (config.collection === "payments") {
           setInvoices(invoices.map((invoice) => {
             const received = nextRecords.filter((payment) => payment.invoiceNumber === invoice.invoiceNumber && payment.status === "Completed").reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -92,9 +117,11 @@ function RecordPage({ config }) {
         await deleteServerRecord(config.collection, record.id);
         replaceRecords(records.filter((item) => String(item.id) !== String(record.id)));
         if (config.collection === "payments") replaceInvoices(await loadServerCollection("invoices"));
+        if (config.collection === "products") replaceStockMovements(await loadServerCollection("stockMovements"));
       } else {
         const remaining = records.filter((item) => item.id !== record.id);
         setRecords(remaining);
+        if (config.collection === "products" && Number(record.stock)) setStockMovements([{ id: globalThis.crypto?.randomUUID?.() || `${Date.now()}`, productId: record.id, productName: record.name, variant: record.variant || "", quantityChange: -Number(record.stock), reason: "Product removed", createdAt: new Date().toISOString() }, ...stockMovements]);
         if (config.collection === "payments") {
           setInvoices(invoices.map((invoice) => {
             const received = remaining.filter((payment) => payment.invoiceNumber === invoice.invoiceNumber && payment.status === "Completed").reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -109,6 +136,27 @@ function RecordPage({ config }) {
     }
   };
 
+  const restock = async (product) => {
+    const raw = window.prompt(`How many units are arriving for ${product.name}${product.variant ? ` (${product.variant})` : ""}?`);
+    if (raw === null) return;
+    const amount = Number(raw);
+    if (!Number.isInteger(amount) || amount <= 0) { setNotice("Enter a whole number greater than zero."); return; }
+    const updated = { ...product, stock: Number(product.stock) + amount };
+    try {
+      if (mode === "server") {
+        const payload = { ...updated };
+        delete payload.id; delete payload.ownerUsername;
+        const saved = await saveServerRecord("products", product.id, payload);
+        replaceRecords(records.map((item) => String(item.id) === String(product.id) ? saved : item));
+        replaceStockMovements(await loadServerCollection("stockMovements"));
+      } else {
+        setRecords(records.map((item) => String(item.id) === String(product.id) ? updated : item));
+        setStockMovements([{ id: globalThis.crypto.randomUUID(), productId: product.id, productName: product.name, variant: product.variant || "", quantityChange: amount, reason: "Restock received", createdAt: new Date().toISOString() }, ...stockMovements]);
+      }
+      setNotice(`${product.name} restocked. New quantity: ${updated.stock}.`);
+    } catch (requestError) { setNotice(requestError.response?.data?.message || "Could not restock this product."); }
+  };
+
   const display = (column, record) => {
     const value = config.collection === "customers" && column.key === "totalDue"
       ? invoices.filter((invoice) => invoice.customerName === record.name).reduce((sum, invoice) => sum + invoiceBalance(invoice, payments), 0)
@@ -116,7 +164,7 @@ function RecordPage({ config }) {
       : record[column.key];
     if (column.money) return money(value);
     if (column.status) return <span className={`status ${String(value).toLowerCase()}`}>{value}</span>;
-    if (column.stock) return <span className={Number(value) < 10 ? "low-stock" : "stock"}>{value}</span>;
+    if (column.stock) return <span className={Number(value) <= Number(record.reorderLevel ?? 10) ? "low-stock" : "stock"}>{value}</span>;
     return value || "—";
   };
 
@@ -144,10 +192,11 @@ function RecordPage({ config }) {
               <thead><tr>{config.columns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Actions</th></tr></thead>
               <tbody>{filtered.map((record) => <tr key={record.id}>
                 {config.columns.map((column) => <td key={column.key} data-label={column.label}>{column.strong ? <strong>{display(column, record)}</strong> : display(column, record)}</td>)}
-                <td className="record-actions" data-label="Actions"><button className="row-action" onClick={() => setEditing({ ...record })}>Edit</button><button className="delete-button" onClick={() => remove(record)}>Delete</button></td>
+                <td className="record-actions" data-label="Actions">{config.collection === "products" && <button className="row-action" onClick={() => restock(record)}>Restock</button>}<button className="row-action" onClick={() => setEditing({ ...record })}>Edit</button><button className="delete-button" onClick={() => remove(record)}>Delete</button></td>
               </tr>)}</tbody>
             </table> : <div className="empty-state"><span>⌕</span><h2>{records.length ? "No matching records" : `No ${config.title.toLowerCase()} yet`}</h2><p>{records.length ? "Try a different search or status filter." : `Add your first ${config.singular.toLowerCase()} to get started.`}</p>{!records.length && <button className="real-primary-button" onClick={openNew}>＋ {config.action}</button>}</div>}
           </div>
+          {config.collection === "products" && <section className="table-card stock-history-card"><div className="real-card-header"><div><small>INVENTORY AUDIT</small><h2>Stock movement history</h2></div><button className="secondary-action" onClick={() => exportCsv("stock-movements.csv", stockMovements, [{ key: "createdAt", label: "Date" }, { key: "productName", label: "Product" }, { key: "variant", label: "Variant" }, { key: "quantityChange", label: "Change" }, { key: "reason", label: "Reason" }])} disabled={!stockMovements.length}>Export history</button></div>{movementError && <div className="api-error">{movementError} Movement history could not be loaded.</div>}{stockMovements.length ? <div className="responsive-table"><table><thead><tr><th>Date</th><th>Product</th><th>Change</th><th>Reason</th></tr></thead><tbody>{stockMovements.slice(0, 30).map((movement) => <tr key={movement.id}><td data-label="Date">{new Date(movement.createdAt).toLocaleString("en-IN")}</td><td data-label="Product"><strong>{movement.productName}{movement.variant ? ` · ${movement.variant}` : ""}</strong></td><td data-label="Change"><span className={Number(movement.quantityChange) > 0 ? "stock" : "low-stock"}>{Number(movement.quantityChange) > 0 ? "+" : ""}{movement.quantityChange}</span></td><td data-label="Reason">{movement.reason}</td></tr>)}</tbody></table></div> : <p className="empty-copy">Stock changes from sales and restocks will appear here.</p>}</section>}
           {notice && <div className="toast" role="status">✓ {notice}</div>}
         </section>
       </main>
@@ -160,7 +209,7 @@ function RecordPage({ config }) {
           <form onSubmit={save} className="record-form">
             {config.fields.map((field) => <label key={field.key}>
               <span>{field.label}{field.required !== false && <b> *</b>}</span>
-              {field.options ? <select name={field.key} defaultValue={editing[field.key] ?? (field.placeholder ? "" : field.options[0])} required={field.required !== false} onChange={(event) => { if (config.collection === "payments" && field.key === "invoiceNumber") { const invoice = invoices.find((item) => item.invoiceNumber === event.target.value); const customerField = event.currentTarget.form?.elements.namedItem("customerName"); if (customerField) customerField.value = invoice?.customerName || ""; } }}>{field.placeholder && <option value="" disabled>{field.placeholder}</option>}{field.options.map((option) => <option key={option}>{option}</option>)}</select> : <input name={field.key} type={field.type || "text"} min={field.type === "number" ? "0" : undefined} step={field.type === "number" ? "any" : undefined} defaultValue={editing[field.key] ?? ""} required={field.required !== false} readOnly={field.readOnly} placeholder={field.placeholder || ""} />}
+              {field.options ? <select name={field.key} defaultValue={editing[field.key] ?? (field.placeholder ? "" : field.options[0])} required={field.required !== false} onChange={(event) => { if (config.collection === "payments" && field.key === "invoiceNumber") { const invoice = invoices.find((item) => item.invoiceNumber === event.target.value); const customerField = event.currentTarget.form?.elements.namedItem("customerName"); if (customerField) customerField.value = invoice?.customerName || ""; } }}>{field.placeholder && <option value="" disabled>{field.placeholder}</option>}{field.options.map((option) => <option key={option}>{option}</option>)}</select> : <input name={field.key} type={field.type || "text"} min={field.type === "number" ? "0" : undefined} step={field.step || (field.type === "number" ? "any" : undefined)} defaultValue={editing[field.key] ?? ""} required={field.required !== false} readOnly={field.readOnly} placeholder={field.placeholder || ""} />}
             </label>)}
             <div className="dialog-actions"><button type="button" className="secondary-action" onClick={() => setEditing(null)} disabled={saving}>Cancel</button><button className="real-primary-button" type="submit" disabled={saving}>{saving ? "Saving…" : editing.id ? "Save changes" : `Add ${config.singular.toLowerCase()}`}</button></div>
           </form>

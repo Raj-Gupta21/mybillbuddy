@@ -7,6 +7,7 @@ import com.mybillbuddy.api.model.InvoiceLineItem;
 import com.mybillbuddy.api.repository.CustomerRepository;
 import com.mybillbuddy.api.repository.InvoiceRepository;
 import com.mybillbuddy.api.repository.PaymentRepository;
+import com.mybillbuddy.api.repository.ProductRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
@@ -22,7 +23,9 @@ public class InvoiceService {
     private final InvoiceRepository repository;
     private final CustomerRepository customers;
     private final PaymentRepository payments;
-    public InvoiceService(InvoiceRepository repository, CustomerRepository customers, PaymentRepository payments) { this.repository = repository; this.customers = customers; this.payments = payments; }
+    private final ProductRepository products;
+    private final StockMovementService movements;
+    public InvoiceService(InvoiceRepository repository, CustomerRepository customers, PaymentRepository payments, ProductRepository products, StockMovementService movements) { this.repository = repository; this.customers = customers; this.payments = payments; this.products = products; this.movements = movements; }
 
     public List<Invoice> getAll(String owner) { return repository.findAllByOwnerUsername(owner).stream().sorted(java.util.Comparator.comparing(Invoice::getId).reversed()).toList(); }
     public Invoice get(Long id, String owner) { return repository.findByIdAndOwnerUsername(id, owner).orElseThrow(() -> new NoSuchElementException("Invoice not found")); }
@@ -34,6 +37,8 @@ public class InvoiceService {
         Invoice invoice = apply(new Invoice(), request);
         invoice.setOwnerUsername(owner);
         invoice.setStatus(statusFor(invoice, BigDecimal.ZERO));
+        adjustInventory(owner, List.of(), invoice.getLineItems(), "Invoice " + invoice.getInvoiceNumber());
+        invoice.setInventoryAdjusted(true);
         return repository.save(invoice);
     }
 
@@ -44,7 +49,10 @@ public class InvoiceService {
         repository.findByInvoiceNumberAndOwnerUsername(request.getInvoiceNumber().trim(), owner).filter(found -> !found.getId().equals(id)).ifPresent(found -> { throw new IllegalArgumentException("That invoice number is already in use."); });
         List<com.mybillbuddy.api.model.Payment> relatedPayments = payments.findAllByOwnerUsername(owner).stream().filter(payment -> invoice.getInvoiceNumber().equals(payment.getInvoiceNumber())).toList();
         if (!relatedPayments.isEmpty() && (!invoice.getInvoiceNumber().equals(request.getInvoiceNumber().trim()) || !invoice.getCustomerName().equalsIgnoreCase(request.getCustomerName().trim()))) throw new IllegalArgumentException("Invoice number and customer cannot be changed after a payment is recorded.");
+        List<InvoiceLineItem> previousItems = invoice.isInventoryAdjusted() ? new ArrayList<>(invoice.getLineItems()) : List.of();
         apply(invoice, request);
+        adjustInventory(owner, previousItems, invoice.getLineItems(), "Invoice " + invoice.getInvoiceNumber() + " updated");
+        invoice.setInventoryAdjusted(true);
         BigDecimal paid = relatedPayments.stream().filter(payment -> "Completed".equalsIgnoreCase(payment.getStatus())).map(com.mybillbuddy.api.model.Payment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         if (paid.compareTo(invoice.getTotal()) > 0) throw new IllegalArgumentException("The new invoice total cannot be less than payments already recorded.");
         invoice.setStatus(statusFor(invoice, paid));
@@ -55,6 +63,7 @@ public class InvoiceService {
     public void delete(Long id, String owner) {
         Invoice invoice = get(id, owner);
         if (payments.existsByInvoiceNumberAndOwnerUsername(invoice.getInvoiceNumber(), owner)) throw new IllegalArgumentException("This invoice has payment history and cannot be deleted.");
+        if (invoice.isInventoryAdjusted()) adjustInventory(owner, invoice.getLineItems(), List.of(), "Invoice " + invoice.getInvoiceNumber() + " deleted");
         repository.delete(invoice);
     }
 
@@ -105,9 +114,32 @@ public class InvoiceService {
             if (request.getLineItems().isEmpty()) throw new IllegalArgumentException("Add at least one invoice line item.");
             for (InvoiceLineItem item : request.getLineItems()) {
                 if (item == null || blank(item.getDescription()) || item.getQuantity() == null || item.getQuantity().signum() <= 0 || item.getUnitPrice() == null || item.getUnitPrice().signum() < 0 || item.getGstRate() == null || GST_RATES.stream().noneMatch(rate -> rate.compareTo(item.getGstRate()) == 0)) throw new IllegalArgumentException("Each item needs a description, positive quantity, non-negative price and supported GST rate (0%, 5%, 12%, 18% or 28%).");
+                if (item.getProductId() != null && products.findByIdAndOwnerUsername(item.getProductId(), owner).isEmpty()) throw new IllegalArgumentException("Choose a product from your own inventory.");
             }
         } else if (request.getTotal() == null || request.getTotal().signum() < 0) throw new IllegalArgumentException("Invoice total must be zero or more.");
         if (request.getTaxMode() != null && !request.getTaxMode().isBlank() && !List.of("IGST", "CGST_SGST").contains(request.getTaxMode())) throw new IllegalArgumentException("Choose IGST or CGST + SGST.");
     }
     private boolean blank(String value) { return value == null || value.isBlank(); }
+
+    private void adjustInventory(String owner, List<InvoiceLineItem> previous, List<InvoiceLineItem> next, String reason) {
+        var accountProducts = products.findAllByOwnerUsername(owner);
+        java.util.Map<Long, BigDecimal> deltas = new java.util.HashMap<>();
+        java.util.function.BiConsumer<InvoiceLineItem, BigDecimal> addLine = (line, multiplier) -> accountProducts.stream()
+                .filter(product -> (line.getProductId() != null && product.getId().equals(line.getProductId())) || (line.getProductId() == null && product.getName().trim().equalsIgnoreCase(line.getDescription().trim())))
+                .findFirst().ifPresent(product -> deltas.merge(product.getId(), line.getQuantity().multiply(multiplier), BigDecimal::add));
+        previous.forEach(line -> addLine.accept(line, BigDecimal.ONE));
+        next.forEach(line -> addLine.accept(line, BigDecimal.ONE.negate()));
+        for (var product : accountProducts) {
+            BigDecimal delta = deltas.get(product.getId());
+            if (delta == null || delta.signum() == 0) continue;
+            int stockChange;
+            try { stockChange = delta.intValueExact(); }
+            catch (ArithmeticException exception) { throw new IllegalArgumentException("Inventory items must use whole-number quantities."); }
+            int updatedStock = product.getStock() + stockChange;
+            if (updatedStock < 0) throw new IllegalArgumentException("Not enough " + product.getName() + " in stock. Available: " + product.getStock() + ".");
+            product.setStock(updatedStock);
+            products.save(product);
+            movements.record(product, stockChange, reason, owner);
+        }
+    }
 }

@@ -30,10 +30,11 @@ const seeds = {
     { id: "c-3", name: "Priya Kitchen", phone: "+91 98765 43212", email: "priya@example.com", address: "Bengaluru, Karnataka", gstin: "", totalDue: 5000 },
   ],
   products: [
-    { id: "p-1", name: "Laptop", category: "Electronics", stock: 25, price: 45000 },
-    { id: "p-2", name: "Wireless mouse", category: "Electronics", stock: 8, price: 1200 },
-    { id: "p-3", name: "Office chair", category: "Furniture", stock: 15, price: 5500 },
+    { id: "p-1", name: "Laptop", category: "Electronics", variant: "", stock: 25, reorderLevel: 5, price: 45000 },
+    { id: "p-2", name: "Wireless mouse", category: "Electronics", variant: "", stock: 8, reorderLevel: 10, price: 1200 },
+    { id: "p-3", name: "Office chair", category: "Furniture", variant: "", stock: 15, reorderLevel: 3, price: 5500 },
   ],
+  stockMovements: [],
   invoices: [
     { id: "i-1", invoiceNumber: "INV-1042", customerName: "Rahul Enterprises", date: dateOffset(-1), dueDate: dateOffset(13), subtotal: 18500, taxAmount: 0, taxMode: "IGST", lineItems: [{ description: "Business services", quantity: 1, unitPrice: 18500, gstRate: 0 }], total: 18500, status: "Paid" },
     { id: "i-2", invoiceNumber: "INV-1041", customerName: "Mehta Stores", date: dateOffset(-2), dueDate: dateOffset(12), subtotal: 8250, taxAmount: 0, taxMode: "IGST", lineItems: [{ description: "Business services", quantity: 1, unitPrice: 8250, gstRate: 0 }], total: 8250, status: "Pending" },
@@ -80,7 +81,8 @@ export async function deleteServerRecord(collection, id) {
 }
 
 export async function loadServerCollection(collection) {
-  const response = await api.get(`/${collection}`);
+  const path = collection === "stockMovements" ? "stock-movements" : collection;
+  const response = await api.get(`/${path}`);
   return Array.isArray(response.data) ? response.data : [];
 }
 
@@ -93,7 +95,8 @@ export function useLocalCollection(collection) {
   React.useEffect(() => {
     let active = true;
     if (mode === "server") {
-      api.get(`/${collection}`)
+      const path = collection === "stockMovements" ? "stock-movements" : collection;
+      api.get(`/${path}`)
         .then((response) => {
           if (active) setRecords(Array.isArray(response.data) ? response.data : []);
         })

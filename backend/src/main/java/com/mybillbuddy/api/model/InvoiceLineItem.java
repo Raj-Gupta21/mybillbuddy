@@ -5,10 +5,13 @@ import java.math.BigDecimal;
 
 @Embeddable
 public class InvoiceLineItem {
+    private Long productId;
     private String description;
     private BigDecimal quantity = BigDecimal.ONE;
     private BigDecimal unitPrice = BigDecimal.ZERO;
     private BigDecimal gstRate = BigDecimal.ZERO;
+    public Long getProductId() { return productId; }
+    public void setProductId(Long productId) { this.productId = productId; }
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
     public BigDecimal getQuantity() { return quantity; }

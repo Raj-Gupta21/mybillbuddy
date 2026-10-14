@@ -16,7 +16,7 @@ function Dashboard() {
   const outstanding = invoices.reduce((sum, invoice) => sum + invoiceBalance(invoice, payments), 0);
   const openInvoices = invoices.filter((invoice) => invoiceBalance(invoice, payments) > 0);
   const overdueInvoices = settings.overdueReminders ? openInvoices.filter((invoice) => invoiceStatus(invoice, payments) === "Overdue") : [];
-  const lowStock = settings.lowStockAlerts ? products.filter((item) => Number(item.stock) < 10) : [];
+  const lowStock = settings.lowStockAlerts ? products.filter((item) => Number(item.stock) <= Number(item.reorderLevel ?? 10)) : [];
   const lastSevenDays = Array.from({ length: 7 }, (_, index) => {
     const day = new Date();
     day.setDate(day.getDate() - (6 - index));
@@ -53,7 +53,7 @@ function Dashboard() {
           <section className="real-card"><div className="real-card-header"><div><small>RECENT ACTIVITY</small><h2>Latest updates</h2></div><Link to="/payments">View payments →</Link></div>{activity.length ? activity.map((item, index) => <div className="real-transaction" key={`${item.description}-${index}`}><div className="transaction-avatar">{item.name?.slice(0, 2).toUpperCase() || "BB"}</div><div><strong>{item.name}</strong><small>{item.description} · {item.date}</small></div><b>{money(item.amount)}</b></div>) : <p className="empty-copy">Your new invoices and payments will show up here.</p>}</section>
         </div>
         {!!overdueInvoices.length && <section className="low-stock-banner"><span>!</span><div><strong>{overdueInvoices.length} overdue invoice{overdueInvoices.length > 1 ? "s" : ""}</strong><p>{overdueInvoices.map((item) => `${item.invoiceNumber} · ${money(invoiceBalance(item, payments))} due`).join(" · ")}</p></div><Link to="/invoices">Review invoices →</Link></section>}
-        {!!lowStock.length && <section className="low-stock-banner"><span>⚠</span><div><strong>{lowStock.length} product{lowStock.length > 1 ? "s" : ""} running low</strong><p>{lowStock.map((item) => `${item.name} (${item.stock})`).join(" · ")}</p></div><Link to="/inventory">Review stock →</Link></section>}
+        {!!lowStock.length && <section className="low-stock-banner"><span>⚠</span><div><strong>{lowStock.length} product{lowStock.length > 1 ? "s" : ""} at or below reorder level</strong><p>{lowStock.map((item) => `${item.name}${item.variant ? ` · ${item.variant}` : ""} (${item.stock} left; alert at ${item.reorderLevel ?? 10})`).join(" · ")}</p></div><Link to="/inventory">Review stock →</Link></section>}
         <section className="quick-actions"><h2>Quick actions</h2><div><Link to="/customers">＋ Add customer</Link><Link to="/inventory">＋ Add product</Link><Link to="/payments">＋ Record payment</Link><Link to="/reports">↗ View reports</Link></div><p>Managing {customers.length} customers and {products.length} products</p></section>
       </div>
     </main>

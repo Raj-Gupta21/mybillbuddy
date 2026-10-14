@@ -2713,6 +2713,24 @@ td strong {
 .record-dialog h2 { margin-top: 7px; color: #172b4d; font-size: 23px; letter-spacing: -.6px; }
 .record-dialog > p { margin: 5px 0 22px; color: #748299; font-size: 12px; }
 .record-form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.record-form.invoice-form { grid-template-columns: minmax(0, 1fr); }
+.invoice-form > * { grid-column: 1 / -1; }
+.invoice-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.invoice-meta-grid > label, .invoice-meta-grid .invoice-date-grid { min-width: 0; }
+.invoice-meta-grid .invoice-date-grid { grid-column: 1 / -1; }
+.invoice-date-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.invoice-lines-heading { display: flex; align-items: center; justify-content: space-between; }
+.invoice-line-editor { display: grid; gap: 12px; padding: 14px; background: #f9fbfe; border: 1px solid #e7edf5; border-radius: 10px; }
+.invoice-line-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.invoice-line-grid .delete-button { align-self: end; }
+.invoice-dialog { width: min(100%, 680px); }
+.stock-history-card { margin-top: 20px; padding: 20px; }
+.stock-history-card .real-card-header { margin-bottom: 14px; }
+.stock-history-card .real-card-header h2 { margin-top: 5px; color: #172b4d; font-size: 18px; }
+.stock-history-card table { width: 100%; border-collapse: collapse; }
+.stock-history-card th, .stock-history-card td { padding: 11px 13px; border-bottom: 1px solid #edf1f5; text-align: left; font-size: 11px; }
+.stock-history-card th { color: #8996a8; font-size: 9px; text-transform: uppercase; }
+.settings-panel .settings-save-row label.secondary-action { display: inline-flex; align-items: center; cursor: pointer; }
 .record-form > label { display: grid; gap: 6px; color: #334155; font-size: 11px; font-weight: 650; }
 .record-form > label > span b { color: #2563eb; }
 .record-form input, .record-form select, .settings-form input, .settings-form select { width: 100%; min-width: 0; padding: 11px 12px; color: #263750; background: #fff; border: 1px solid #dce4ee; border-radius: 8px; outline: 0; font-size: 12px; }
@@ -2850,6 +2868,8 @@ td strong {
   .onboarding-steps a { min-height: 54px; }
   .real-dashboard-grid { grid-template-columns: 1fr; }
   .record-form { grid-template-columns: 1fr; }
+  .invoice-meta-grid, .invoice-line-grid { grid-template-columns: 1fr; }
+  .invoice-meta-grid .invoice-date-grid { grid-column: auto; }
   .record-dialog { padding: 25px 19px 19px; }
   .responsive-table { overflow: visible; background: transparent; border: 0; box-shadow: none; }
   .responsive-table table { display: block; min-width: 0; }
