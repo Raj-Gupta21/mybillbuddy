@@ -2693,6 +2693,18 @@ td strong {
 .secondary-action:disabled { opacity: .45; cursor: not-allowed; }
 .record-actions { display: flex; align-items: center; gap: 7px; }
 .row-action { padding: 7px 10px; }
+.admin-health-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 20px 0; }
+.admin-health-grid .stat-card { padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; }
+.admin-health-grid .stat-card span { display: block; color: #64748b; font-size: 12px; }
+.admin-health-grid .stat-card strong { display: block; margin-top: 8px; font-size: 24px; }
+.admin-section-title { padding: 18px 20px 0; margin: 0; font-size: 17px; }
+.admin-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.admin-panels .settings-panel { min-width: 0; }
+.admin-activity { padding: 0; margin: 0; list-style: none; }
+.admin-activity li { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid #edf1f5; font-size: 12px; }
+.admin-activity li span { color: #64748b; }
+.admin-announcement { margin: 12px; padding: 10px; border-radius: 8px; color: #dbeafe; background: #1e3a66; font-size: 11px; line-height: 1.45; }
+@media (max-width: 760px) { .admin-health-grid, .admin-panels { grid-template-columns: 1fr; } }
 .delete-button { padding: 7px 10px; color: #b42318; background: #fff; border: 1px solid #fee4e2; border-radius: 7px; font-size: 10px; font-weight: 650; }
 .delete-button:hover { color: #8f1d15; background: #fff5f4; }
 .filter-label { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 12px; color: #64748b; font-size: 11px; }

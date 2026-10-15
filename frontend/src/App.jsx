@@ -9,6 +9,7 @@ import Payments from "./pages/Payments";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import Login from "./pages/Login";
+import Admin from "./pages/Admin";
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
         <Route path="/reports" element={<Reports />} />
 
         <Route path="/settings" element={<Settings />} />
+        <Route path="/admin" element={<Admin />} />
         <Route path="/login" element={<Login />} />
 
         <Route path="*" element={<main className="not-found"><span>404</span><h1>That page isn’t here</h1><p>Try the home page or open the demo workspace.</p><div><Link to="/">Go home</Link><Link to="/dashboard">Open demo →</Link></div></main>} />

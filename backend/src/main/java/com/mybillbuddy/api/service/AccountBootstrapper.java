@@ -24,6 +24,7 @@ import java.util.List;
 public class AccountBootstrapper implements ApplicationRunner {
     @Value("${app.auth.username:}") private String bootstrapUsername;
     @Value("${app.auth.password:}") private String bootstrapPassword;
+    @Value("${app.admin.email:}") private String adminEmail;
     private final AccountRepository accounts;
     private final BillRepository bills;
     private final CustomerRepository customers;
@@ -42,6 +43,10 @@ public class AccountBootstrapper implements ApplicationRunner {
             int at = bootstrapUsername.indexOf('@'); created.setName(at > 0 ? bootstrapUsername.substring(0, at) : "Business owner"); created.setBusinessName("MyBillBuddy Workspace");
             return accounts.save(created);
         });
+        if (adminEmail != null && !adminEmail.isBlank() && account.getUsername().equalsIgnoreCase(adminEmail.trim()) && encoder.matches(bootstrapPassword, account.getPassword())) {
+            account.setSiteAdmin(true);
+            accounts.save(account);
+        }
         List<Customer> legacyCustomers = customers.findAllByOwnerUsernameIsNull();
         List<Product> legacyProducts = products.findAllByOwnerUsernameIsNull();
         List<Invoice> legacyInvoices = invoices.findAllByOwnerUsernameIsNull();

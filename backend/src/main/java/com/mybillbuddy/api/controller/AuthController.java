@@ -37,7 +37,7 @@ public class AuthController {
     public ResponseEntity<SessionResponse> login(@RequestBody AuthRequest request) {
         try {
             Authentication auth = authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(request.getUsername(), request.getPassword()));
-            Account account = accounts.get(auth.getName());
+            Account account = accounts.recordLogin(auth.getName());
             return withSession(account);
         } catch (AuthenticationException exception) {
             throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.UNAUTHORIZED, "Invalid email or password.");

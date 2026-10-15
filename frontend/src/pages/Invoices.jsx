@@ -11,6 +11,29 @@ const invoiceTotals = (lines) => lines.reduce((sum, line) => {
 }, { subtotal: 0, tax: 0 });
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 
+function invoicePdf(invoice, customer, payments, business) {
+  const lines = invoice.lineItems?.length ? invoice.lineItems : [{ description: "Invoice total", quantity: 1, unitPrice: invoice.total, gstRate: 0 }];
+  const rows = [business, "TAX INVOICE", `Invoice: ${invoice.invoiceNumber}`, `Issue date: ${invoice.date}`, `Due date: ${invoice.dueDate || "Not specified"}`, `Bill to: ${customer?.name || invoice.customerName}`, `Phone: ${customer?.phone || "Not specified"}`, "", "Items:"];
+  lines.forEach((line) => rows.push(`${line.description} | Qty ${line.quantity} | ${money(line.unitPrice)} each | GST ${line.gstRate || 0}% | ${money(lineBase(line) * (1 + Number(line.gstRate || 0) / 100))}`));
+  const totals = invoiceTotals(lines);
+  rows.push("", `Subtotal: ${money(totals.subtotal)}`, `GST: ${money(totals.tax)}`, `Total: ${money(totals.subtotal + totals.tax)}`, `Balance due: ${money(invoiceBalance(invoice, payments))}`);
+  const escapePdf = (value) => String(value).normalize("NFKD").replace(/[^\x20-\x7E]/g, "?").replace(/([\\()])/g, "\\$1");
+  const commands = ["BT", "/F1 11 Tf", "50 790 Td", "15 TL", ...rows.flatMap((row) => [`(${escapePdf(row)}) Tj`, "T*"]), "ET"].join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${new TextEncoder().encode(commands).length} >>\nstream\n${commands}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => { offsets.push(new TextEncoder().encode(pdf).length); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+  const xref = new TextEncoder().encode(pdf).length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return new File([pdf], `${invoice.invoiceNumber}.pdf`, { type: "application/pdf" });
+}
+
 function printInvoice(invoice, customer, settings) {
   const windowRef = window.open("", "_blank");
   if (!windowRef) return;
@@ -31,6 +54,7 @@ function Invoices() {
   const [products, setProducts] = useLocalCollection("products");
   const [payments] = useLocalCollection("payments");
   const [stockMovements, setStockMovements] = useLocalCollection("stockMovements");
+  const [messageLogs, setMessageLogs] = useState(() => { try { return JSON.parse(localStorage.getItem("mybillbuddy:invoiceMessages") || "[]"); } catch { return []; } });
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get("search") || "");
   const [status, setStatus] = useState("All status");
   const [editing, setEditing] = useState(null);
@@ -118,20 +142,50 @@ function Invoices() {
     try { settings = JSON.parse(localStorage.getItem("mybillbuddy:settings") || "{}"); } catch { /* Use default invoice branding when browser storage is unavailable. */ }
     printInvoice(invoice, customers.find((item) => item.name === invoice.customerName), { ...settings, payments });
   };
-  const shareInvoice = (invoice) => {
+  const sendWhatsApp = async (invoice, kind) => {
     const customer = customers.find((item) => item.name === invoice.customerName);
+    const digits = String(customer?.phone || "").replace(/\D/g, "");
+    if (!digits) { setNotice(`Add a phone number for ${customer?.name || invoice.customerName} before sharing on WhatsApp.`); return; }
     const balance = invoiceBalance(invoice, payments);
-    const subject = `Invoice ${invoice.invoiceNumber} from ${customer?.name || "our business"}`;
-    const body = `Hello ${customer?.name || ""},\n\nPlease find the details for invoice ${invoice.invoiceNumber}.\nInvoice total: ${money(invoice.total)}\nBalance due: ${money(balance)}\nDue date: ${invoice.dueDate || "—"}\n\nRegards`;
-    const mailto = `mailto:${encodeURIComponent(customer?.email || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    if (navigator.share) navigator.share({ title: subject, text: body }).catch(() => { window.location.href = mailto; });
-    else window.location.href = mailto;
+    let business = "MyBillBuddy";
+    try { business = JSON.parse(localStorage.getItem("mybillbuddy:settings") || "{}").business || business; } catch { /* Keep default business name. */ }
+    const reminder = kind === "Reminder";
+    const pdf = invoicePdf(invoice, customer, payments, business);
+    const body = reminder
+      ? `Hello ${customer?.name || ""},\n\nA friendly reminder that invoice ${invoice.invoiceNumber} has an outstanding balance of ${money(balance)}. The due date was ${invoice.dueDate || "not specified"}. Please see the attached bill.\n\nPlease let us know if you have already made this payment.\n\nRegards, ${business}`
+      : `Hello ${customer?.name || ""},\n\nPlease find attached the bill for invoice ${invoice.invoiceNumber}.\nInvoice total: ${money(invoice.total)}\nBalance due: ${money(balance)}\nDue date: ${invoice.dueDate || "not specified"}\n\nRegards, ${business}`;
+    const entry = { id: globalThis.crypto?.randomUUID?.() || `${Date.now()}`, invoiceId: String(invoice.id), invoiceNumber: invoice.invoiceNumber, customerName: customer?.name || invoice.customerName, phone: customer.phone, kind, sentAt: new Date().toISOString(), message: body, status: "Prepared" };
+    const whatsappUrl = `https://wa.me/${digits}?text=${encodeURIComponent(body)}`;
+    if (navigator.canShare?.({ files: [pdf] }) && navigator.share) {
+      try {
+        await navigator.share({ files: [pdf], title: `${invoice.invoiceNumber} bill`, text: body });
+        entry.status = "Shared from device";
+        setNotice(`Bill ${invoice.invoiceNumber} was passed to your device share sheet. Choose WhatsApp to send it.`);
+      } catch (shareError) {
+        if (shareError.name === "AbortError") { setNotice("Sharing cancelled. No message was sent."); return; }
+        entry.status = "PDF downloaded; WhatsApp opened";
+        const url = URL.createObjectURL(pdf);
+        const link = document.createElement("a"); link.href = url; link.download = pdf.name; link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+        window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+        setNotice(`Bill downloaded as ${pdf.name}. Attach it in WhatsApp before sending.`);
+      }
+    } else {
+      entry.status = "PDF downloaded; WhatsApp opened";
+      const url = URL.createObjectURL(pdf);
+      const link = document.createElement("a"); link.href = url; link.download = pdf.name; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+      window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+      setNotice(`Bill downloaded as ${pdf.name}. Attach it in WhatsApp before sending.`);
+    }
+    const nextLogs = [entry, ...messageLogs];
+    setMessageLogs(nextLogs);
+    try { localStorage.setItem("mybillbuddy:invoiceMessages", JSON.stringify(nextLogs)); } catch { /* Keep the current in-memory history if storage is unavailable. */ }
   };
-  const remindCustomer = (invoice) => {
-    const customer = customers.find((item) => item.name === invoice.customerName);
-    const subject = `Payment reminder: invoice ${invoice.invoiceNumber}`;
-    const body = `Hello ${customer?.name || ""},\n\nA friendly reminder that invoice ${invoice.invoiceNumber} is overdue. The remaining balance is ${money(invoiceBalance(invoice, payments))}. The due date was ${invoice.dueDate || ""}.\n\nPlease let us know if you have already made this payment.\n\nRegards`;
-    window.location.href = `mailto:${encodeURIComponent(customer?.email || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  const messageHistory = (invoice) => {
+    const entries = messageLogs.filter((entry) => entry.invoiceId === String(invoice.id));
+    if (!entries.length) { setNotice(`No WhatsApp messages recorded for ${invoice.invoiceNumber}.`); return; }
+    setNotice(`${entries.length} WhatsApp ${entries.length === 1 ? "message" : "messages"} recorded for ${invoice.invoiceNumber}. Latest: ${new Date(entries[0].sentAt).toLocaleString()} (${entries[0].kind}; delivery not confirmed).`);
   };
   const totals = editing ? invoiceTotals(editing.lineItems || []) : { subtotal: 0, tax: 0 };
 
@@ -141,7 +195,7 @@ function Invoices() {
       <div className="page-heading"><div><h1>Invoices</h1><p>Create, track and collect itemized invoices. <span className="record-count">{filtered.length} total</span></p></div><div className="page-actions"><button className="secondary-action" onClick={() => exportCsv("invoices.csv", filtered.map((invoice) => ({ ...invoice, balance: invoiceBalance(invoice, payments), status: invoiceStatus(invoice, payments) })), [{ key: "invoiceNumber", label: "Invoice" }, { key: "customerName", label: "Customer" }, { key: "date", label: "Issue date" }, { key: "dueDate", label: "Due date" }, { key: "subtotal", label: "Subtotal" }, { key: "taxAmount", label: "GST" }, { key: "total", label: "Total" }, { key: "balance", label: "Balance due" }, { key: "status", label: "Status" }])} disabled={!filtered.length}>Export CSV</button><button className="real-primary-button" onClick={openNew} disabled={loading || !customers.length}>＋ Create invoice</button></div></div>
       {!customers.length && <div className="api-error">Add a customer before creating an invoice. <a href="/customers">Open customers →</a></div>}
       <label className="filter-label">Status <select value={status} onChange={(event) => setStatus(event.target.value)}><option>All status</option><option>Paid</option><option>Pending</option><option>Overdue</option></select></label>
-      <div className="table-card responsive-table">{loading ? <div className="empty-state"><h2>Loading invoices…</h2></div> : filtered.length ? <table><thead><tr>{["Invoice", "Customer", "Issue date", "Due date", "Total", "Balance due", "Status", "Actions"].map((label) => <th key={label}>{label}</th>)}</tr></thead><tbody>{filtered.map((invoice) => <tr key={invoice.id}><td data-label="Invoice"><strong>{invoice.invoiceNumber}</strong></td><td data-label="Customer">{invoice.customerName}</td><td data-label="Issue date">{invoice.date}</td><td data-label="Due date">{invoice.dueDate || "—"}</td><td data-label="Total">{money(invoice.total)}</td><td data-label="Balance due">{money(invoiceBalance(invoice, payments))}</td><td data-label="Status"><span className={`status ${invoiceStatus(invoice, payments).toLowerCase()}`}>{invoiceStatus(invoice, payments)}</span></td><td className="record-actions" data-label="Actions"><button className="row-action" aria-label={`Edit ${invoice.invoiceNumber}`} onClick={() => openEdit(invoice)}>Edit</button><button className="row-action" aria-label={`Print ${invoice.invoiceNumber}`} onClick={() => print(invoice)}>PDF</button><button className="row-action" aria-label={`Share ${invoice.invoiceNumber}`} onClick={() => shareInvoice(invoice)}>Share</button>{invoiceStatus(invoice, payments) === "Overdue" && invoiceBalance(invoice, payments) > 0 && <button className="row-action" onClick={() => remindCustomer(invoice)}>Remind</button>}<button className="delete-button" aria-label={`Delete ${invoice.invoiceNumber}`} onClick={() => remove(invoice)}>Delete</button></td></tr>)}</tbody></table> : <div className="empty-state"><span>▤</span><h2>{invoices.length ? "No matching invoices" : "No invoices yet"}</h2><p>{invoices.length ? "Try another search or status filter." : "Create your first itemized invoice to get started."}</p>{!invoices.length && customers.length > 0 && <button className="real-primary-button" onClick={openNew}>＋ Create invoice</button>}</div>}</div>
+      <div className="table-card responsive-table">{loading ? <div className="empty-state"><h2>Loading invoices…</h2></div> : filtered.length ? <table><thead><tr>{["Invoice", "Customer", "Issue date", "Due date", "Total", "Balance due", "Status", "Actions"].map((label) => <th key={label}>{label}</th>)}</tr></thead><tbody>{filtered.map((invoice) => <tr key={invoice.id}><td data-label="Invoice"><strong>{invoice.invoiceNumber}</strong></td><td data-label="Customer">{invoice.customerName}</td><td data-label="Issue date">{invoice.date}</td><td data-label="Due date">{invoice.dueDate || "—"}</td><td data-label="Total">{money(invoice.total)}</td><td data-label="Balance due">{money(invoiceBalance(invoice, payments))}</td><td data-label="Status"><span className={`status ${invoiceStatus(invoice, payments).toLowerCase()}`}>{invoiceStatus(invoice, payments)}</span></td><td className="record-actions" data-label="Actions"><button className="row-action" aria-label={`Edit ${invoice.invoiceNumber}`} onClick={() => openEdit(invoice)}>Edit</button><button className="row-action" aria-label={`Print ${invoice.invoiceNumber}`} onClick={() => print(invoice)}>PDF</button><button className="row-action" aria-label={`Share ${invoice.invoiceNumber}`} onClick={() => sendWhatsApp(invoice, "Invoice")}>WhatsApp</button><button className="row-action" aria-label={`Message history ${invoice.invoiceNumber}`} onClick={() => messageHistory(invoice)}>History{messageLogs.some((entry) => entry.invoiceId === String(invoice.id)) ? ` (${messageLogs.filter((entry) => entry.invoiceId === String(invoice.id)).length})` : ""}</button>{invoiceStatus(invoice, payments) === "Overdue" && invoiceBalance(invoice, payments) > 0 && <button className="row-action" onClick={() => sendWhatsApp(invoice, "Reminder")}>Remind</button>}<button className="delete-button" aria-label={`Delete ${invoice.invoiceNumber}`} onClick={() => remove(invoice)}>Delete</button></td></tr>)}</tbody></table> : <div className="empty-state"><span>▤</span><h2>{invoices.length ? "No matching invoices" : "No invoices yet"}</h2><p>{invoices.length ? "Try another search or status filter." : "Create your first itemized invoice to get started."}</p>{!invoices.length && customers.length > 0 && <button className="real-primary-button" onClick={openNew}>＋ Create invoice</button>}</div>}</div>
       {notice && <div className="toast" role="status">{notice}</div>}
     </section>
   </main>

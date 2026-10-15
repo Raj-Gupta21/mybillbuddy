@@ -4,6 +4,7 @@ import com.mybillbuddy.api.dto.AccountSettingsRequest;
 import com.mybillbuddy.api.dto.RegisterRequest;
 import com.mybillbuddy.api.model.Account;
 import com.mybillbuddy.api.repository.AccountRepository;
+import com.mybillbuddy.api.repository.SiteSettingsRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -19,15 +20,18 @@ public class AccountService implements UserDetailsService {
     private static final Pattern EMAIL = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
     private final AccountRepository repository;
     private final PasswordEncoder encoder;
-    public AccountService(AccountRepository repository, PasswordEncoder encoder) { this.repository = repository; this.encoder = encoder; }
+    private final SiteSettingsRepository siteSettings;
+    public AccountService(AccountRepository repository, PasswordEncoder encoder, SiteSettingsRepository siteSettings) { this.repository = repository; this.encoder = encoder; this.siteSettings = siteSettings; }
 
     @Override public UserDetails loadUserByUsername(String username) {
         return repository.findByUsernameIgnoreCase(username).orElseThrow(() -> new UsernameNotFoundException("Account not found"));
     }
     public Account get(String username) { return repository.findByUsernameIgnoreCase(username).orElseThrow(() -> new UsernameNotFoundException("Account not found")); }
+    @Transactional public Account recordLogin(String username) { Account account = get(username); account.setLastLoginAt(java.time.Instant.now()); return repository.save(account); }
 
     @Transactional
     public Account register(RegisterRequest request) {
+        if (siteSettings.findById(1L).map(settings -> !settings.isRegistrationOpen()).orElse(false)) throw new IllegalArgumentException("New account registration is currently closed.");
         if (request == null || request.getUsername() == null || !EMAIL.matcher(request.getUsername().trim()).matches()) throw new IllegalArgumentException("Enter a valid email address.");
         String email = request.getUsername().trim().toLowerCase(Locale.ROOT);
         if (request.getPassword() == null || request.getPassword().length() < 12) throw new IllegalArgumentException("Use a password with at least 12 characters.");

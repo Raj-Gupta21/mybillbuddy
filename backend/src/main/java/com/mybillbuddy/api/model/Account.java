@@ -31,6 +31,14 @@ public class Account implements UserDetails {
     private boolean lowStockAlerts = true;
     @Column(nullable = false)
     private boolean paymentAlerts = true;
+    @Column(nullable = false)
+    private boolean enabled = true;
+    @Column(name = "site_admin", nullable = false)
+    private boolean siteAdmin = false;
+    @Column(name = "created_at", updatable = false)
+    private java.time.Instant createdAt = java.time.Instant.now();
+    @Column(name = "last_login_at")
+    private java.time.Instant lastLoginAt;
 
     public Long getId() { return id; }
     public String getUsername() { return username; }
@@ -53,9 +61,15 @@ public class Account implements UserDetails {
     public void setLowStockAlerts(boolean value) { this.lowStockAlerts = value; }
     public boolean isPaymentAlerts() { return paymentAlerts; }
     public void setPaymentAlerts(boolean value) { this.paymentAlerts = value; }
-    @Override public Collection<? extends GrantedAuthority> getAuthorities() { return List.of(new SimpleGrantedAuthority("ROLE_USER")); }
+    public boolean isEnabled() { return enabled; }
+    public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    public boolean isSiteAdmin() { return siteAdmin; }
+    public void setSiteAdmin(boolean siteAdmin) { this.siteAdmin = siteAdmin; }
+    public java.time.Instant getCreatedAt() { return createdAt; }
+    public java.time.Instant getLastLoginAt() { return lastLoginAt; }
+    public void setLastLoginAt(java.time.Instant lastLoginAt) { this.lastLoginAt = lastLoginAt; }
+    @Override public Collection<? extends GrantedAuthority> getAuthorities() { return siteAdmin ? List.of(new SimpleGrantedAuthority("ROLE_USER"), new SimpleGrantedAuthority("ROLE_ADMIN")) : List.of(new SimpleGrantedAuthority("ROLE_USER")); }
     @Override public boolean isAccountNonExpired() { return true; }
     @Override public boolean isAccountNonLocked() { return true; }
     @Override public boolean isCredentialsNonExpired() { return true; }
-    @Override public boolean isEnabled() { return true; }
 }
