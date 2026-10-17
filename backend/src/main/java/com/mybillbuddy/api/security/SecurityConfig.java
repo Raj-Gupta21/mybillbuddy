@@ -49,15 +49,31 @@ public class SecurityConfig {
                         )
                 )
 
-                .authorizeHttpRequests(auth -> auth
+                
+.authorizeHttpRequests(auth -> auth
 
-                        .requestMatchers(HttpMethod.POST, "/api/auth/login", "/api/auth/register", "/api/auth/logout").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/auth/csrf").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/admin/status").authenticated()
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+    // Allow the backend root URL
+    .requestMatchers(HttpMethod.GET, "/").permitAll()
 
-                        .anyRequest().authenticated()
-                )
+    // Allow login, registration, and logout requests
+    .requestMatchers(HttpMethod.POST,
+        "/api/auth/login",
+        "/api/auth/register",
+        "/api/auth/logout"
+    ).permitAll()
+
+    .requestMatchers(HttpMethod.GET, "/api/auth/csrf").permitAll()
+
+    // Keep admin status protected
+    .requestMatchers(HttpMethod.GET, "/api/admin/status").authenticated()
+
+    // Allow browser preflight requests
+    .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+
+    // Protect all other endpoints
+    .anyRequest().authenticated()
+)
+
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))
                 );
